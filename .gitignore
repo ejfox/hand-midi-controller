@@ -1,0 +1,23 @@
+# virtual environments
+venv/
+env/
+.env
+
+# config files
+hand_midi_config.json
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# os
+.DS_Store
+Thumbs.db
+
+# ide
+.vscode/
+.idea/
+*.swp
+*.swo
