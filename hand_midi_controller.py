@@ -607,14 +607,16 @@ class HandMIDIController:
         
         # Use configurable thresholds
         if avg_distance < self.config.fist_threshold_closed:  # Very close = fist
-            return 127
+            return MIDI_MAX_VALUE
         elif avg_distance > self.config.fist_threshold_open:  # Far = open hand
-            return 0
+            return MIDI_MIN_VALUE
         else:
-            # Linear interpolation
+            # Linear interpolation with safety check
             threshold_range = self.config.fist_threshold_open - self.config.fist_threshold_closed
+            if threshold_range <= 0:
+                return MIDI_MIN_VALUE  # Invalid config, default to open
             normalized = (self.config.fist_threshold_open - avg_distance) / threshold_range
-            return max(0, min(127, int(normalized * 127)))
+            return max(MIDI_MIN_VALUE, min(MIDI_MAX_VALUE, int(normalized * MIDI_MAX_VALUE)))
     
     def calculate_spread(self, hand_landmarks) -> int:
         """Detect finger spread (0=closed, 127=spread)"""
@@ -637,13 +639,16 @@ class HandMIDIController:
         
         # Use configurable thresholds
         if avg_spread < self.config.spread_threshold_closed:  # Fingers together
-            return 0
+            return MIDI_MIN_VALUE
         elif avg_spread > self.config.spread_threshold_open:  # Fingers spread
-            return 127
+            return MIDI_MAX_VALUE
         else:
+            # Linear interpolation with safety check
             threshold_range = self.config.spread_threshold_open - self.config.spread_threshold_closed
+            if threshold_range <= 0:
+                return MIDI_MIN_VALUE  # Invalid config, default to closed
             normalized = (avg_spread - self.config.spread_threshold_closed) / threshold_range
-            return max(0, min(127, int(normalized * 127)))
+            return max(MIDI_MIN_VALUE, min(MIDI_MAX_VALUE, int(normalized * MIDI_MAX_VALUE)))
     
     def calculate_thumb_finger_distance(self, hand_landmarks, finger_tip_index: int) -> int:
         """Calculate distance between thumb and specified finger tip"""
@@ -653,13 +658,16 @@ class HandMIDIController:
         
         # Use configurable thresholds
         if distance >= self.config.finger_distance_far:
-            return 0
+            return MIDI_MIN_VALUE
         elif distance <= self.config.finger_distance_near:
-            return 127
+            return MIDI_MAX_VALUE
         else:
+            # Linear interpolation with safety check
             threshold_range = self.config.finger_distance_far - self.config.finger_distance_near
+            if threshold_range <= 0:
+                return MIDI_MIN_VALUE  # Invalid config, default to far
             normalized = (self.config.finger_distance_far - distance) / threshold_range
-            return max(0, min(127, int(normalized * 127)))
+            return max(MIDI_MIN_VALUE, min(MIDI_MAX_VALUE, int(normalized * MIDI_MAX_VALUE)))
     
     def process_hand(self, hand_landmarks, handedness) -> Tuple:
         """Process hand landmarks and send MIDI data"""
