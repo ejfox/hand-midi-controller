@@ -217,6 +217,8 @@ class Config:
             config.hand_distance_tracking = True
             
             # Enable corresponding CC mappings
+            # TODO: Consider making this more maintainable by using feature flags
+            # e.g., if config.fist_detection and 'fist' in key
             for key in config.cc_mappings:
                 # Use exact matches to avoid false positives
                 if key in ['left_thumb_middle', 'right_thumb_middle',
@@ -596,6 +598,8 @@ class HandMIDIController:
     
     def calculate_fist(self, hand_landmarks) -> int:
         """Detect closed fist gesture (0=open, 127=closed)"""
+        # TODO: Consider extracting threshold validation to helper method
+        # to reduce code duplication across gesture calculations
         wrist = hand_landmarks.landmark[0]
         
         # Get all fingertips
