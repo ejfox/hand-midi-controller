@@ -39,6 +39,11 @@ except ImportError:
     print("⚠️  rtmidi not available - install with: pip install python-rtmidi")
 
 
+# MIDI Constants
+MIDI_MAX_VALUE = 127
+MIDI_MIN_VALUE = 0
+
+
 @dataclass
 class Config:
     """Configuration for Hand MIDI Controller"""
@@ -98,6 +103,20 @@ class Config:
     rotation_offset: float = 0.0     # Rotation offset in radians
     rotation_range: float = 3.14159  # Full rotation range (pi = 180°)
     
+    # Velocity Settings
+    velocity_scale: float = 500.0    # Velocity scaling factor (tune for your camera/setup)
+    
+    # Distance Settings
+    max_hand_distance: float = 1.4   # Maximum normalized hand distance (diagonal)
+    
+    # Gesture Detection Thresholds
+    fist_threshold_closed: float = 0.15   # Distance for closed fist
+    fist_threshold_open: float = 0.25     # Distance for open hand
+    spread_threshold_closed: float = 0.05  # Finger distance when closed
+    spread_threshold_open: float = 0.15    # Finger distance when spread
+    finger_distance_near: float = 0.02     # Near threshold for finger distances
+    finger_distance_far: float = 0.15      # Far threshold for finger distances
+    
     # Inter-finger Distance Settings
     thumb_index_enabled: bool = True
     thumb_middle_enabled: bool = False
@@ -109,6 +128,8 @@ class Config:
     fist_detection: bool = False     # Detect closed fist
     pointing_detection: bool = False # Detect pointing gesture
     spread_detection: bool = True    # Detect finger spread
+    velocity_tracking: bool = False  # Track hand movement velocity
+    hand_distance_tracking: bool = False  # Track distance between hands
     
     # Camera Settings
     camera_index: int = 0
@@ -164,7 +185,12 @@ class Config:
                 'left_fist': {'cc': 17, 'label': 'L_FIST', 'color': (200, 200, 0), 'enabled': False},
                 'right_fist': {'cc': 18, 'label': 'R_FIST', 'color': (200, 0, 200), 'enabled': False},
                 'left_spread': {'cc': 19, 'label': 'L_SPREAD', 'color': (0, 200, 200), 'enabled': False},
-                'right_spread': {'cc': 20, 'label': 'R_SPREAD', 'color': (200, 100, 100), 'enabled': False}
+                'right_spread': {'cc': 20, 'label': 'R_SPREAD', 'color': (200, 100, 100), 'enabled': False},
+                
+                # Velocity and distance
+                'left_velocity': {'cc': 21, 'label': 'L_VEL', 'color': (180, 180, 255), 'enabled': False},
+                'right_velocity': {'cc': 22, 'label': 'R_VEL', 'color': (255, 180, 180), 'enabled': False},
+                'hand_distance': {'cc': 23, 'label': 'HAND_DIST', 'color': (255, 255, 180), 'enabled': False}
             }
     
     @classmethod
@@ -186,8 +212,21 @@ class Config:
             config.thumb_middle_enabled = True
             config.thumb_ring_enabled = True
             config.spread_detection = True
+            config.fist_detection = True
+            config.velocity_tracking = True
+            config.hand_distance_tracking = True
+            
+            # Enable corresponding CC mappings
+            # TODO: Consider making this more maintainable by using feature flags
+            # e.g., if config.fist_detection and 'fist' in key
             for key in config.cc_mappings:
-                if 'thumb_middle' in key or 'thumb_ring' in key or 'spread' in key:
+                # Use exact matches to avoid false positives
+                if key in ['left_thumb_middle', 'right_thumb_middle',
+                          'left_thumb_ring', 'right_thumb_ring',
+                          'left_spread', 'right_spread',
+                          'left_fist', 'right_fist',
+                          'left_velocity', 'right_velocity',
+                          'hand_distance']:
                     config.cc_mappings[key]['enabled'] = True
                     
         elif preset_name == "studio":
@@ -200,6 +239,11 @@ class Config:
             config.palm_sensitivity = 0.8
             config.show_landmarks = False  # Clean recording view
             
+            # Enable velocity for dynamics but keep it simple
+            config.velocity_tracking = True
+            config.cc_mappings['left_velocity']['enabled'] = True
+            config.cc_mappings['right_velocity']['enabled'] = True
+            
         elif preset_name == "precise":
             # Maximum precision with 14-bit MIDI
             config.send_14bit_cc = True
@@ -209,6 +253,13 @@ class Config:
             config.pinch_threshold_open = 0.08
             config.position_deadzone = 0.01
             config.palm_deadzone = 0.02
+            
+            # Enable all primary controls with high precision
+            config.velocity_tracking = True
+            config.hand_distance_tracking = True
+            config.cc_mappings['left_velocity']['enabled'] = True
+            config.cc_mappings['right_velocity']['enabled'] = True
+            config.cc_mappings['hand_distance']['enabled'] = True
             
         elif preset_name == "experimental":
             # All features enabled for experimentation
@@ -220,6 +271,8 @@ class Config:
             config.fist_detection = True
             config.pointing_detection = True
             config.spread_detection = True
+            config.velocity_tracking = True
+            config.hand_distance_tracking = True
             config.log_hand_data = True
             
             # Enable all CC mappings
@@ -281,6 +334,13 @@ class HandMIDIController:
         # Initialize smoothing
         self.left_hand_history = self._create_history_dict()
         self.right_hand_history = self._create_history_dict()
+        
+        # Position tracking for velocity and distance
+        self.left_hand_pos_history = deque(maxlen=self.config.velocity_smoothing)
+        self.right_hand_pos_history = deque(maxlen=self.config.velocity_smoothing)
+        self.last_left_pos = None
+        self.last_right_pos = None
+        self.both_hands_detected = False
         
         # Current CC values for visualization
         self.current_cc_values = {key: 0 for key in self.config.cc_mappings}
@@ -433,7 +493,7 @@ class HandMIDIController:
             cc_num = cc_info['cc']
             
             # Clamp value to valid MIDI range
-            value = max(0, min(127, int(value)))
+            value = max(MIDI_MIN_VALUE, min(MIDI_MAX_VALUE, int(value)))
             
             # Store for visualization
             self.current_cc_values[cc_key] = value
@@ -506,6 +566,113 @@ class HandMIDIController:
             normalized = (thumb_index_dist - self.config.pinch_threshold_close) / range_size
             return max(0, min(127, int(127 * (1.0 - normalized))))
     
+    def calculate_velocity(self, current_pos: Tuple[float, float], 
+                          last_pos: Optional[Tuple[float, float]]) -> int:
+        """Calculate hand movement velocity (0-127)"""
+        if last_pos is None:
+            return 0
+        
+        # Calculate distance moved
+        dx = current_pos[0] - last_pos[0]
+        dy = current_pos[1] - last_pos[1]
+        distance = math.sqrt(dx * dx + dy * dy)
+        
+        # Scale to MIDI range using configured scale factor
+        velocity = min(127, int(distance * self.config.velocity_scale))
+        return velocity
+    
+    def calculate_hand_distance(self, left_pos: Optional[Tuple[float, float]], 
+                                right_pos: Optional[Tuple[float, float]]) -> int:
+        """Calculate distance between both hands (0-127)"""
+        if left_pos is None or right_pos is None:
+            return 0
+        
+        # Calculate 2D distance between hands
+        dx = left_pos[0] - right_pos[0]
+        dy = left_pos[1] - right_pos[1]
+        distance = math.sqrt(dx * dx + dy * dy)
+        
+        # Normalize to MIDI range using configured max distance
+        normalized = min(1.0, distance / self.config.max_hand_distance)
+        return int(normalized * 127)
+    
+    def calculate_fist(self, hand_landmarks) -> int:
+        """Detect closed fist gesture (0=open, 127=closed)"""
+        # TODO: Consider extracting threshold validation to helper method
+        # to reduce code duplication across gesture calculations
+        wrist = hand_landmarks.landmark[0]
+        
+        # Get all fingertips
+        fingertips = [hand_landmarks.landmark[i] for i in [4, 8, 12, 16, 20]]
+        
+        # Calculate average distance from wrist to fingertips
+        distances = [self.calculate_distance(wrist, tip) for tip in fingertips]
+        avg_distance = np.mean(distances)
+        
+        # Use configurable thresholds
+        if avg_distance < self.config.fist_threshold_closed:  # Very close = fist
+            return MIDI_MAX_VALUE
+        elif avg_distance > self.config.fist_threshold_open:  # Far = open hand
+            return MIDI_MIN_VALUE
+        else:
+            # Linear interpolation with safety check
+            threshold_range = self.config.fist_threshold_open - self.config.fist_threshold_closed
+            if threshold_range <= 0:
+                return MIDI_MIN_VALUE  # Invalid config, default to open
+            normalized = (self.config.fist_threshold_open - avg_distance) / threshold_range
+            return max(MIDI_MIN_VALUE, min(MIDI_MAX_VALUE, int(normalized * MIDI_MAX_VALUE)))
+    
+    def calculate_spread(self, hand_landmarks) -> int:
+        """Detect finger spread (0=closed, 127=spread)"""
+        # Get fingertips
+        thumb = hand_landmarks.landmark[4]
+        index = hand_landmarks.landmark[8]
+        middle = hand_landmarks.landmark[12]
+        ring = hand_landmarks.landmark[16]
+        pinky = hand_landmarks.landmark[20]
+        
+        # Calculate distances between adjacent fingers
+        distances = [
+            self.calculate_distance(thumb, index),
+            self.calculate_distance(index, middle),
+            self.calculate_distance(middle, ring),
+            self.calculate_distance(ring, pinky)
+        ]
+        
+        avg_spread = np.mean(distances)
+        
+        # Use configurable thresholds
+        if avg_spread < self.config.spread_threshold_closed:  # Fingers together
+            return MIDI_MIN_VALUE
+        elif avg_spread > self.config.spread_threshold_open:  # Fingers spread
+            return MIDI_MAX_VALUE
+        else:
+            # Linear interpolation with safety check
+            threshold_range = self.config.spread_threshold_open - self.config.spread_threshold_closed
+            if threshold_range <= 0:
+                return MIDI_MIN_VALUE  # Invalid config, default to closed
+            normalized = (avg_spread - self.config.spread_threshold_closed) / threshold_range
+            return max(MIDI_MIN_VALUE, min(MIDI_MAX_VALUE, int(normalized * MIDI_MAX_VALUE)))
+    
+    def calculate_thumb_finger_distance(self, hand_landmarks, finger_tip_index: int) -> int:
+        """Calculate distance between thumb and specified finger tip"""
+        thumb_tip = hand_landmarks.landmark[4]
+        finger_tip = hand_landmarks.landmark[finger_tip_index]
+        distance = self.calculate_distance(thumb_tip, finger_tip)
+        
+        # Use configurable thresholds
+        if distance >= self.config.finger_distance_far:
+            return MIDI_MIN_VALUE
+        elif distance <= self.config.finger_distance_near:
+            return MIDI_MAX_VALUE
+        else:
+            # Linear interpolation with safety check
+            threshold_range = self.config.finger_distance_far - self.config.finger_distance_near
+            if threshold_range <= 0:
+                return MIDI_MIN_VALUE  # Invalid config, default to far
+            normalized = (self.config.finger_distance_far - distance) / threshold_range
+            return max(MIDI_MIN_VALUE, min(MIDI_MAX_VALUE, int(normalized * MIDI_MAX_VALUE)))
+    
     def process_hand(self, hand_landmarks, handedness) -> Tuple:
         """Process hand landmarks and send MIDI data"""
         hand_type = handedness.classification[0].label
@@ -554,12 +721,47 @@ class HandMIDIController:
         # Calculate pinch value
         pinch_midi = self.calculate_pinch_value(smoothed_dist)
         
-        # Send MIDI messages
+        # Send basic MIDI messages
         self.send_midi_cc(f'{cc_prefix}_x', int(smoothed_x))
         self.send_midi_cc(f'{cc_prefix}_y', int(smoothed_y))
         self.send_midi_cc(f'{cc_prefix}_pinch', pinch_midi)
         self.send_midi_cc(f'{cc_prefix}_palm', int(smoothed_palm))
         self.send_midi_cc(f'{cc_prefix}_rotation', int(smoothed_rotation))
+        
+        # Calculate and send advanced gestures if enabled
+        if self.config.fist_detection:
+            fist_value = self.calculate_fist(hand_landmarks)
+            self.send_midi_cc(f'{cc_prefix}_fist', fist_value)
+        
+        if self.config.spread_detection:
+            spread_value = self.calculate_spread(hand_landmarks)
+            self.send_midi_cc(f'{cc_prefix}_spread', spread_value)
+        
+        # Calculate additional finger distances if enabled
+        if self.config.thumb_middle_enabled:
+            thumb_middle_dist = self.calculate_thumb_finger_distance(hand_landmarks, 12)
+            self.send_midi_cc(f'{cc_prefix}_thumb_middle', thumb_middle_dist)
+        
+        if self.config.thumb_ring_enabled:
+            thumb_ring_dist = self.calculate_thumb_finger_distance(hand_landmarks, 16)
+            self.send_midi_cc(f'{cc_prefix}_thumb_ring', thumb_ring_dist)
+        
+        if self.config.thumb_pinky_enabled:
+            thumb_pinky_dist = self.calculate_thumb_finger_distance(hand_landmarks, 20)
+            self.send_midi_cc(f'{cc_prefix}_thumb_pinky', thumb_pinky_dist)
+        
+        # Track velocity if enabled
+        if self.config.velocity_tracking:
+            current_pos = (palm_x, palm_y)
+            last_pos = self.last_left_pos if hand_type == "Left" else self.last_right_pos
+            velocity = self.calculate_velocity(current_pos, last_pos)
+            self.send_midi_cc(f'{cc_prefix}_velocity', velocity)
+        
+        # Always store position for next frame (used by both velocity and distance calculation)
+        if hand_type == "Left":
+            self.last_left_pos = (palm_x, palm_y)
+        else:
+            self.last_right_pos = (palm_x, palm_y)
         
         return palm_x, palm_y, thumb_tip, index_tip, pinch_midi
     
@@ -746,7 +948,25 @@ class HandMIDIController:
         cv2.putText(overlay, f"pinch: {self.config.pinch_threshold_close:.3f}-{self.config.pinch_threshold_open:.3f}", 
                    (10, y_offset), font, 0.4, colors['secondary'], 1)
         y_offset += 18
-        cv2.putText(overlay, f"smooth: pos={self.config.position_smoothing} gest={self.config.gesture_smoothing}", (10, y_offset), font, 0.4, colors['secondary'], 1)
+        cv2.putText(overlay, f"smooth: pos={self.config.position_smoothing} gest={self.config.gesture_smoothing}", 
+                   (10, y_offset), font, 0.4, colors['secondary'], 1)
+        y_offset += 18
+        
+        # Feature status
+        features = []
+        if self.config.velocity_tracking:
+            features.append("velocity")
+        if self.config.hand_distance_tracking:
+            features.append("distance")
+        if self.config.fist_detection:
+            features.append("fist")
+        if self.config.spread_detection:
+            features.append("spread")
+        
+        if features:
+            cv2.putText(overlay, f"features: {', '.join(features)}", 
+                       (10, y_offset), font, 0.4, colors['accent'], 1)
+            y_offset += 18
         
         # Blend overlay
         cv2.addWeighted(overlay, 0.7, frame, 1.0, 0, frame)
@@ -805,7 +1025,39 @@ class HandMIDIController:
         # Always draw custom area overlay on top
         self.draw_custom_area_overlay(frame)
         
+        # Draw config status bar at bottom
+        self.draw_config_status(frame)
+        
         return frame
+    
+    def draw_config_status(self, frame):
+        """Draw configuration status bar at bottom of screen"""
+        h, w = frame.shape[:2]
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        
+        # Semi-transparent background
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, h - 25), (w, h), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+        
+        # Configuration info
+        status_text = f"smooth:{self.config.position_smoothing}/{self.config.gesture_smoothing} | pinch:{self.config.pinch_threshold_open:.2f}"
+        
+        # Add active features
+        active_features = []
+        if self.config.velocity_tracking:
+            active_features.append("vel")
+        if self.config.hand_distance_tracking:
+            active_features.append("dist")
+        if self.config.fist_detection:
+            active_features.append("fist")
+        if self.config.spread_detection:
+            active_features.append("sprd")
+        
+        if active_features:
+            status_text += f" | features: {','.join(active_features)}"
+        
+        cv2.putText(frame, status_text, (10, h - 8), font, 0.4, (200, 200, 200), 1)
     
     def draw_hand_visualization(self, frame, hand_landmarks, palm_x, palm_y, 
                                thumb_tip, index_tip, pinch_value):
@@ -849,7 +1101,11 @@ class HandMIDIController:
         print("  's' - save current config")
         print("  'c' - clear custom mapping area")
         print("  'v' - cycle video devices")
-        print("  click and drag - set custom mapping area")
+        print("  '1-5' - load preset (1=performance, 2=studio, 3=precise, 4=experimental, 5=minimal)")
+        print("  '+/-' - adjust position smoothing")
+        print("  '[/]' - adjust gesture smoothing")
+        print("  '{/}' - adjust pinch sensitivity")
+        print("  'click and drag' - set custom mapping area")
         
         # Check available cameras
         print("\ndetecting available cameras...")
@@ -918,6 +1174,11 @@ class HandMIDIController:
                         # Draw visualization
                         self.draw_hand_visualization(frame, hand_landmarks, palm_x, palm_y,
                                                    thumb_tip, index_tip, pinch_value)
+                    
+                    # Calculate hand distance if both hands detected and enabled
+                    if self.config.hand_distance_tracking and self.last_left_pos and self.last_right_pos:
+                        hand_distance = self.calculate_hand_distance(self.last_left_pos, self.last_right_pos)
+                        self.send_midi_cc('hand_distance', hand_distance)
                 
                 # Draw UI
                 frame = self.draw_ui(frame)
@@ -966,6 +1227,50 @@ class HandMIDIController:
                         print(f"[+] switched to camera {self.config.camera_index}")
                     else:
                         print("[i] only one camera available")
+                elif key == ord('1'):
+                    # Load performance preset
+                    self.config = Config.create_preset("performance")
+                    print("[+] loaded PERFORMANCE preset - high sensitivity, all gestures enabled")
+                elif key == ord('2'):
+                    # Load studio preset
+                    self.config = Config.create_preset("studio")
+                    print("[+] loaded STUDIO preset - balanced, smooth for recording")
+                elif key == ord('3'):
+                    # Load precise preset
+                    self.config = Config.create_preset("precise")
+                    print("[+] loaded PRECISE preset - 14-bit MIDI, maximum smoothing")
+                elif key == ord('4'):
+                    # Load experimental preset
+                    self.config = Config.create_preset("experimental")
+                    print("[+] loaded EXPERIMENTAL preset - all features enabled")
+                elif key == ord('5'):
+                    # Load minimal preset
+                    self.config = Config.create_preset("minimal")
+                    print("[+] loaded MINIMAL preset - basic controls only")
+                elif key == ord('+') or key == ord('='):
+                    # Increase position smoothing
+                    self.config.position_smoothing = min(20, self.config.position_smoothing + 1)
+                    print(f"[+] position smoothing: {self.config.position_smoothing}")
+                elif key == ord('-') or key == ord('_'):
+                    # Decrease position smoothing
+                    self.config.position_smoothing = max(1, self.config.position_smoothing - 1)
+                    print(f"[-] position smoothing: {self.config.position_smoothing}")
+                elif key == ord('['):
+                    # Decrease gesture smoothing
+                    self.config.gesture_smoothing = max(1, self.config.gesture_smoothing - 1)
+                    print(f"[-] gesture smoothing: {self.config.gesture_smoothing}")
+                elif key == ord(']'):
+                    # Increase gesture smoothing
+                    self.config.gesture_smoothing = min(20, self.config.gesture_smoothing + 1)
+                    print(f"[+] gesture smoothing: {self.config.gesture_smoothing}")
+                elif key == ord('{'):
+                    # Decrease pinch open threshold (more sensitive)
+                    self.config.pinch_threshold_open = max(0.05, self.config.pinch_threshold_open - 0.01)
+                    print(f"[+] pinch more sensitive: open={self.config.pinch_threshold_open:.3f}")
+                elif key == ord('}'):
+                    # Increase pinch open threshold (less sensitive)
+                    self.config.pinch_threshold_open = min(0.20, self.config.pinch_threshold_open + 0.01)
+                    print(f"[-] pinch less sensitive: open={self.config.pinch_threshold_open:.3f}")
                     
         except KeyboardInterrupt:
             print("\n[!] stopped by user")
