@@ -39,6 +39,11 @@ except ImportError:
     print("⚠️  rtmidi not available - install with: pip install python-rtmidi")
 
 
+# MIDI Constants
+MIDI_MAX_VALUE = 127
+MIDI_MIN_VALUE = 0
+
+
 @dataclass
 class Config:
     """Configuration for Hand MIDI Controller"""
@@ -103,6 +108,14 @@ class Config:
     
     # Distance Settings
     max_hand_distance: float = 1.4   # Maximum normalized hand distance (diagonal)
+    
+    # Gesture Detection Thresholds
+    fist_threshold_closed: float = 0.15   # Distance for closed fist
+    fist_threshold_open: float = 0.25     # Distance for open hand
+    spread_threshold_closed: float = 0.05  # Finger distance when closed
+    spread_threshold_open: float = 0.15    # Finger distance when spread
+    finger_distance_near: float = 0.02     # Near threshold for finger distances
+    finger_distance_far: float = 0.15      # Far threshold for finger distances
     
     # Inter-finger Distance Settings
     thumb_index_enabled: bool = True
@@ -478,7 +491,7 @@ class HandMIDIController:
             cc_num = cc_info['cc']
             
             # Clamp value to valid MIDI range
-            value = max(0, min(127, int(value)))
+            value = max(MIDI_MIN_VALUE, min(MIDI_MAX_VALUE, int(value)))
             
             # Store for visualization
             self.current_cc_values[cc_key] = value
@@ -592,15 +605,15 @@ class HandMIDIController:
         distances = [self.calculate_distance(wrist, tip) for tip in fingertips]
         avg_distance = np.mean(distances)
         
-        # Closed fist has fingertips closer to wrist
-        # Tune these thresholds based on testing
-        if avg_distance < 0.15:  # Very close = fist
+        # Use configurable thresholds
+        if avg_distance < self.config.fist_threshold_closed:  # Very close = fist
             return 127
-        elif avg_distance > 0.25:  # Far = open hand
+        elif avg_distance > self.config.fist_threshold_open:  # Far = open hand
             return 0
         else:
             # Linear interpolation
-            normalized = (0.25 - avg_distance) / (0.25 - 0.15)
+            threshold_range = self.config.fist_threshold_open - self.config.fist_threshold_closed
+            normalized = (self.config.fist_threshold_open - avg_distance) / threshold_range
             return max(0, min(127, int(normalized * 127)))
     
     def calculate_spread(self, hand_landmarks) -> int:
@@ -622,14 +635,14 @@ class HandMIDIController:
         
         avg_spread = np.mean(distances)
         
-        # Normalize to MIDI range
-        # Tune thresholds based on testing
-        if avg_spread < 0.05:  # Fingers together
+        # Use configurable thresholds
+        if avg_spread < self.config.spread_threshold_closed:  # Fingers together
             return 0
-        elif avg_spread > 0.15:  # Fingers spread
+        elif avg_spread > self.config.spread_threshold_open:  # Fingers spread
             return 127
         else:
-            normalized = (avg_spread - 0.05) / (0.15 - 0.05)
+            threshold_range = self.config.spread_threshold_open - self.config.spread_threshold_closed
+            normalized = (avg_spread - self.config.spread_threshold_closed) / threshold_range
             return max(0, min(127, int(normalized * 127)))
     
     def calculate_thumb_finger_distance(self, hand_landmarks, finger_tip_index: int) -> int:
@@ -638,13 +651,14 @@ class HandMIDIController:
         finger_tip = hand_landmarks.landmark[finger_tip_index]
         distance = self.calculate_distance(thumb_tip, finger_tip)
         
-        # Normalize to MIDI range (tune thresholds)
-        if distance >= 0.15:
+        # Use configurable thresholds
+        if distance >= self.config.finger_distance_far:
             return 0
-        elif distance <= 0.02:
+        elif distance <= self.config.finger_distance_near:
             return 127
         else:
-            normalized = (0.15 - distance) / (0.15 - 0.02)
+            threshold_range = self.config.finger_distance_far - self.config.finger_distance_near
+            normalized = (self.config.finger_distance_far - distance) / threshold_range
             return max(0, min(127, int(normalized * 127)))
     
     def process_hand(self, hand_landmarks, handedness) -> Tuple:
