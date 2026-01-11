@@ -92,14 +92,60 @@ that's it. "hand midi controller" should appear in your daw's midi inputs.
 | Key | Action |
 |-----|--------|
 | Q | Quit application |
+| M | Cycle UI modes (minimal/cyberpunk/debug) |
 | V | Cycle between cameras |
-| F | Toggle fullscreen |
-| O | Toggle overlay display |
-| R | Reset region selection |
-| Click+Drag | Select custom X/Y region |
+| S | Save current configuration |
+| C | Clear custom mapping area |
+| 1-5 | Load preset (1=performance, 2=studio, 3=precise, 4=experimental, 5=minimal) |
+| +/- | Adjust position smoothing (more/less smooth) |
+| [/] | Adjust gesture smoothing (more/less smooth) |
+| {/} | Adjust pinch sensitivity (more/less sensitive) |
+| Click+Drag | Select custom X/Y mapping region |
+
+## presets
+
+quickly switch between optimized configurations with number keys 1-5:
+
+### 1 - performance preset
+optimized for live performance with maximum expressiveness:
+- high sensitivity for responsive control
+- all gestures enabled (velocity, distance, fist, spread)
+- extended finger distance tracking
+- minimal smoothing for real-time feel
+- cyberpunk ui mode
+
+### 2 - studio preset  
+balanced settings for studio recording:
+- increased smoothing for stable recordings
+- velocity tracking enabled for dynamics
+- minimal ui for clean video
+- optimized thresholds for consistent takes
+
+### 3 - precise preset
+maximum control resolution:
+- 14-bit midi cc for ultra-precise control
+- heavy smoothing for minimal jitter
+- tight thresholds for accurate gestures
+- velocity and distance tracking enabled
+
+### 4 - experimental preset
+all features enabled for exploration:
+- every gesture type active
+- all finger distance combinations
+- fist, spread, pointing detection
+- debug ui with full telemetry
+- ideal for discovering new control methods
+
+### 5 - minimal preset
+basic hand tracking only:
+- position (x/y) and pinch only
+- lightweight processing
+- clean interface
+- perfect for simple setups
 
 ## midi mappings
 
+### basic controls (always active)
 left hand:
 - **cc01** - x position
 - **cc02** - y position  
@@ -113,6 +159,46 @@ right hand:
 - **cc06** - thumb-index pinch
 - **cc08** - palm openness  
 - **cc10** - hand rotation
+
+### advanced controls (enable in presets or config)
+left hand advanced:
+- **cc11** - thumb-middle distance
+- **cc13** - thumb-ring distance  
+- **cc15** - thumb-pinky distance
+- **cc17** - fist detection
+- **cc19** - finger spread
+- **cc21** - hand velocity
+
+right hand advanced:
+- **cc12** - thumb-middle distance
+- **cc14** - thumb-ring distance
+- **cc16** - thumb-pinky distance  
+- **cc18** - fist detection
+- **cc20** - finger spread
+- **cc22** - hand velocity
+
+both hands:
+- **cc23** - distance between hands
+
+### runtime adjustments
+
+tune your setup on the fly without restarting:
+
+- **+/-** keys adjust position smoothing
+  - lower = more responsive, jittery
+  - higher = smoother, slight lag
+  - range: 1-20 frames
+
+- **[/]** keys adjust gesture smoothing  
+  - affects pinch, palm, rotation
+  - lower = instant response
+  - higher = stable values
+  - range: 1-20 frames
+
+- **{/}** keys adjust pinch sensitivity
+  - **{** = more sensitive (larger open threshold)
+  - **}** = less sensitive (smaller open threshold)
+  - watch the pinch values and tune to your hand size
 
 ## ui modes
 
