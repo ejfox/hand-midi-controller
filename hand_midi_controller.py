@@ -98,6 +98,12 @@ class Config:
     rotation_offset: float = 0.0     # Rotation offset in radians
     rotation_range: float = 3.14159  # Full rotation range (pi = 180°)
     
+    # Velocity Settings
+    velocity_scale: float = 500.0    # Velocity scaling factor (tune for your camera/setup)
+    
+    # Distance Settings
+    max_hand_distance: float = 1.4   # Maximum normalized hand distance (diagonal)
+    
     # Inter-finger Distance Settings
     thumb_index_enabled: bool = True
     thumb_middle_enabled: bool = False
@@ -199,7 +205,13 @@ class Config:
             
             # Enable corresponding CC mappings
             for key in config.cc_mappings:
-                if any(x in key for x in ['thumb_middle', 'thumb_ring', 'spread', 'fist', 'velocity', 'distance']):
+                # Use exact matches to avoid false positives
+                if key in ['left_thumb_middle', 'right_thumb_middle',
+                          'left_thumb_ring', 'right_thumb_ring',
+                          'left_spread', 'right_spread',
+                          'left_fist', 'right_fist',
+                          'left_velocity', 'right_velocity',
+                          'hand_distance']:
                     config.cc_mappings[key]['enabled'] = True
                     
         elif preset_name == "studio":
@@ -550,8 +562,8 @@ class HandMIDIController:
         dy = current_pos[1] - last_pos[1]
         distance = math.sqrt(dx * dx + dy * dy)
         
-        # Scale to MIDI range (tune the multiplier based on testing)
-        velocity = min(127, int(distance * 500))
+        # Scale to MIDI range using configured scale factor
+        velocity = min(127, int(distance * self.config.velocity_scale))
         return velocity
     
     def calculate_hand_distance(self, left_pos: Optional[Tuple[float, float]], 
@@ -565,9 +577,8 @@ class HandMIDIController:
         dy = left_pos[1] - right_pos[1]
         distance = math.sqrt(dx * dx + dy * dy)
         
-        # Normalize to MIDI range (0-1 screen distance -> 0-127)
-        # Assuming max distance is about 1.4 (diagonal of screen)
-        normalized = min(1.0, distance / 1.4)
+        # Normalize to MIDI range using configured max distance
+        normalized = min(1.0, distance / self.config.max_hand_distance)
         return int(normalized * 127)
     
     def calculate_fist(self, hand_landmarks) -> int:
@@ -719,14 +730,8 @@ class HandMIDIController:
             last_pos = self.last_left_pos if hand_type == "Left" else self.last_right_pos
             velocity = self.calculate_velocity(current_pos, last_pos)
             self.send_midi_cc(f'{cc_prefix}_velocity', velocity)
-            
-            # Update last position
-            if hand_type == "Left":
-                self.last_left_pos = current_pos
-            else:
-                self.last_right_pos = current_pos
         
-        # Store position for distance calculation
+        # Always store position for next frame (used by both velocity and distance calculation)
         if hand_type == "Left":
             self.last_left_pos = (palm_x, palm_y)
         else:
